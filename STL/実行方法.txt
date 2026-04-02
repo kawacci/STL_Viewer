@@ -1,0 +1,7 @@
+uv run --with trimesh --with numpy --with fast-simplification python STL/simplify_stl.py
+
+uv run --with trimesh --with numpy --with fast-simplification python STL/simplify_stl_v2.py
+
+uv run --with trimesh --with numpy --with fast-simplification python STL/simplify_stl_v3.py
+
+uv run --with trimesh --with numpy --with fast-simplification python STL/simplify_stl_v4.py
