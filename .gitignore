@@ -3,3 +3,22 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# ビルド済みのバイナリファイル（他人のPCでは動かないため）
+*.bin
+*.elf
+*.hex
+
+# OSが勝手に作る一時ファイル
+.DS_Store
+Thumbs.db
+
+# もしVS Codeの設定すべてを同期したくないなら（個人設定が含まれる場合）
+.vscode/
+
+STL/simplify_stl_v4.py
+STL/simplify_stl_v3.py
+STL/simplify_stl_v2.py
+STL/simplify_stl.py
+STL/実行方法.txt
+
