@@ -10,12 +10,30 @@
 #define SD_SPI_MOSI_PIN 44
 #define SD_SPI_MISO_PIN 39
 
-// 共通設定
+// 画面向き 0 (標準) でのレイアウト
+// 上部: STL表示 (0-719) / 下部: UI領域 (720-1279)
+#define STL_OFFSET_Y 0
+#define UI_OFFSET_Y 720
 #define TILE_W 720
 #define TILE_H 80
 #define TILE_COUNT 9
 
-LGFX_Sprite canvas(&M5.Display);
+// UIスプライトの回転軸の座標（720x1280の画面に対して）
+const uint16_t rotaionXY[4][5] = {
+    {360, 820, 360, 1180, 0},    // 0度
+    {180, 1000, 540, 1000, 270}, // 90度
+    {360, 1180, 360, 820, 180},  // 180度
+    {540, 1000, 180, 1000, 90}   // 270度
+};
+
+int currentRotation = 0; // 0:正立, 1:右向き, 2:逆さま, 3:左向き
+
+const int BtnshiftRange[4][2] = {{480, 80}, {560, -560}, {80, -640}, {160, 0}}; // 各回転でのUIエリアのシフト範囲（UIエリア560X560の原点）
+const int AutoshiftRange[4][2] = {{545, 635}, {5, 95}, {85, 175}, {465, 555}};  // AUTOボタンのY座標のシフト範囲（UIエリア内での位置）
+int localX, localY;                                                             // タッチ座標をUIエリアのローカル座標に変換するための変数
+
+LGFX_Sprite canvas(&M5.Display);   // STL描画用の720x720スプライト
+LGFX_Sprite canvasUI(&M5.Display); // UI用の560x560スプライト
 
 struct Triangle
 {
@@ -32,7 +50,7 @@ float offsetX, offsetY, offsetZ;
 
 bool isAutoMode = true;
 uint32_t lastTouchTime = 0;
-const uint32_t AUTO_RETURN_MS = 5000;
+const uint32_t AUTO_RETURN_MS = 10000;
 
 uint16_t baseColor = TFT_WHITE;
 struct ColorOption
@@ -40,7 +58,15 @@ struct ColorOption
     uint16_t color;
     int x;
 };
-ColorOption colorPalette[] = {{TFT_WHITE, 100}, {TFT_CYAN, 220}, {TFT_GREENYELLOW, 340}, {TFT_ORANGE, 460}};
+// 色とx座標のペアを6個定義
+ColorOption colorPalette[] = {
+    {TFT_WHITE, 40},        // 1つ目
+    {TFT_SILVER, 115},      // 2つ目
+    {TFT_ORANGE, 190},      // 3つ目
+    {TFT_YELLOW, 265},      // 4つ目
+    {TFT_GREENYELLOW, 340}, // 5つ目
+    {TFT_CYAN, 415},        // 6つ目
+};
 
 m5::touch_point_t tp[5];
 int prev_touch_count = 0;
@@ -48,9 +74,6 @@ float prev_pinch_dist = 0;
 int last_x, last_y;
 
 const float lightDir[3] = {0.577f, 0.577f, 0.577f};
-
-// 現在の画面向きを保持
-int currentRotation = 0;
 
 void matMultiply(float A[3][3], float B[3][3], float C[3][3])
 {
@@ -109,134 +132,178 @@ bool loadSTL(const char *path)
     return true;
 }
 
-void drawUI()
+void drawUI_Ver2() // UIを一新して、上部に文字情報、下部に操作エリアを配置するバージョン
 {
-    int ui_y = 720;
-    M5.Display.fillRect(0, ui_y, 720, 560, M5.Display.color565(20, 20, 22));
-    M5.Display.setTextColor(TFT_LIGHTGREY);
-    M5.Display.setTextDatum(top_center);
-    M5.Display.setFont(&fonts::FreeSansBoldOblique18pt7b);
-    M5.Display.drawString("Tab5 STL Viewer", 360, ui_y + 40);
+    // ... 文字情報の描画 ...
+    canvasUI.fillSprite(TFT_BLACK); // パーツ1の背景を塗りつぶす
+    canvasUI.setTextColor(TFT_LIGHTGREY);
+    canvasUI.setTextDatum(top_center);
+    canvasUI.setFont(&fonts::FreeSansBoldOblique18pt7b);
+    canvasUI.drawString("Tab5 STL Viewer v2.0", 280, 40);
 
-    // --- 追加箇所：ファイル名の表示 ---
-    M5.Display.setFont(&fonts::FreeSans12pt7b);
-    M5.Display.setTextColor(TFT_LIGHTGREY); // 色を変えても可
-    M5.Display.drawString(currentFileName, 360, ui_y + 85);
-    // ------------------------------
+    canvasUI.setFont(&fonts::FreeSans12pt7b);
+    canvasUI.drawString(currentFileName, 280, 85);
+    canvasUI.setCursor(180, 125);
+    canvasUI.printf("POLYGONS: %d", (int)model.size());
+    canvasUI.drawString("SWIPE: ROTATE / PINCH: ZOOM", 280, 165);
 
-    M5.Display.setTextColor(TFT_LIGHTGREY);      // 色を戻す
-    M5.Display.setCursor(360 - 100, ui_y + 125); // Y座標を少し下げて調整
-    M5.Display.printf("POLYGONS: %d", (int)model.size());
-    M5.Display.drawString("SWIPE: ROTATE / PINCH: ZOOM", 360, ui_y + 165); // Y座標を調整
+    // canvasUI.pushSprite(80, 720); // 上側に配置
+    canvasUI.pushRotateZoom(rotaionXY[currentRotation][0], rotaionXY[currentRotation][1], rotaionXY[currentRotation][4], 1.0, 1.0);
+
+    // ... ボタンやパレットの描画 ...
+    canvasUI.fillSprite(TFT_BLACK); // パーツ2の背景を塗りつぶす
     for (auto &p : colorPalette)
     {
-        M5.Display.fillCircle(p.x, ui_y + 480, 30, p.color);
+        canvasUI.fillCircle(p.x, 120, 30, p.color);
         if (p.color == baseColor)
-            M5.Display.drawCircle(p.x, ui_y + 480, 35, TFT_WHITE);
+            canvasUI.drawCircle(p.x, 120, 35, TFT_WHITE);
     }
 
-    M5.Display.fillRoundRect(580, ui_y + 450, 100, 60, 10, isAutoMode ? TFT_BLUE : TFT_DARKGREY);
-    M5.Display.setTextColor(TFT_WHITE);
-    M5.Display.drawString("AUTO", 630, ui_y + 465);
+    canvasUI.fillRoundRect(465, 90, 90, 60, 10, isAutoMode ? TFT_BLUE : TFT_DARKGREY);
+    canvasUI.setTextColor(TFT_WHITE);
+    canvasUI.drawString("AUTO", 510, 105);
+
+    // canvasUI.pushSprite(80, 1080); // 下側に配置
+    canvasUI.pushRotateZoom(rotaionXY[currentRotation][2], rotaionXY[currentRotation][3], rotaionXY[currentRotation][4], 1.0, 1.0);
 }
 
-void setup()
+void IMUupdate() // IMUの更新と自動回転判定
 {
-    auto cfg = M5.config();
-    M5.begin(cfg);
-    M5.Imu.begin();
-    M5.Display.setRotation(0);
-
-    SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
-    SD.begin(SD_SPI_CS_PIN, SPI, 25000000);
-    loadSTL(currentFilePath.c_str());
-    drawUI();
-    canvas.setColorDepth(16);
-    canvas.createSprite(TILE_W, TILE_H);
-    lastTouchTime = millis();
-}
-
-void loop()
-{
-    M5.update();
-
-    // --- 1. IMUによる自動回転判定 ---
     if (M5.Imu.update())
     {
         auto data = M5.Imu.getImuData();
         float ay = data.accel.y;
+        float ax = data.accel.x;
         int nextRotation = currentRotation;
         if (ay > 0.5f)
             nextRotation = 0; // 正立
         else if (ay < -0.5f)
             nextRotation = 2; // 逆さま
+        else if (ax < -0.5f)
+            nextRotation = 3; // 左向き
+        else if (ax > 0.5f)
+            nextRotation = 1; // 右向き
+
         if (nextRotation != currentRotation)
         {
             currentRotation = nextRotation;
-            M5.Display.setRotation(currentRotation);
-            M5.Display.fillScreen(TFT_BLACK);
-            drawUI();
+            M5.Display.fillRect(0, 720, 720, 560, TFT_BLACK); // UIエリアをクリア
+            drawUI_Ver2();
         }
     }
+}
 
-    // --- 2. タッチ入力と座標正規化 ---
-    int count = M5.Lcd.getTouchRaw(tp, 5);
-    if (count > 0)
+void touchLCD()
+{
+    int count = M5.Lcd.getTouchRaw(tp, 5); // タッチポイントの数を取得
+    static uint32_t lastCheckTime = 0;
+    if (count > 0) // タッチがある場合
     {
-        lastTouchTime = millis();
-        int tx = tp[0].x;
-        int ty = tp[0].y;
-        if (currentRotation == 2)
-        {
-            tx = 720 - tx;
-            ty = 1280 - ty;
-        }
+        lastTouchTime = millis(); // タッチがあるたびにタイマーをリセット
 
-        if (ty > 720)
-        { // UI判定
-            if (tx > 580 && ty > 720 + 450)
+        // --- UIエリア（下部）のタッチ判定 ---
+        if (tp[0].y >= 720)
+        {                                                     // タッチ座標UIエリア
+            if (currentRotation == 0 || currentRotation == 2) // 回転0度と180度はX軸が水平なので、localXはtp[0].xを基準に、localYはtp[0].yを基準に変換
             {
-                isAutoMode = true;
-                drawUI();
-            }
-            for (auto &p : colorPalette)
-            {
-                if (abs(tx - p.x) < 40 && abs(ty - (720 + 480)) < 40)
+                localX = tp[0].x;                                           // UIキャンバスの左端オフセット
+                localY = tp[0].y - 720 - BtnshiftRange[currentRotation][0]; // UIキャンバスの上端オフセットと回転によるシフトを考慮してローカル座標に変換
+
+                // 1. カラーパレット判定 (半径30)
+                // 許容範囲を少し広めに（上下35ピクセルなど）設定します
+                if (abs(localY) < 35)
                 {
-                    baseColor = p.color;
-                    drawUI();
+                    for (int i = 0; i < 6; i++) // 算出した6個の座標
+                    {
+                        int targetX = colorPalette[i].x; // 先ほど計算した 40, 115, 190...（回転によってXとYが入れ替わるため、colorPalette[i].xをtargetXとして扱う）
+                        if (abs(localX - abs(targetX + BtnshiftRange[currentRotation][1])) < 35)
+                        {
+                            baseColor = colorPalette[i].color;
+                            drawUI_Ver2(); // 選択枠を更新するために再描画
+                            break;
+                        }
+                    }
+                }
+
+                // 2. AUTOボタン判定
+                // ボタンの描画位置が (465, 170) なら、同じ localY の範囲で判定可能です
+                if (localX >= AutoshiftRange[currentRotation][0] - 5 && localX <= AutoshiftRange[currentRotation][1] + 5 && abs(localY) < 35)
+                {
+                    if (millis() - lastCheckTime > 300)
+                    {                             // 300ms間隔をあける
+                        isAutoMode = !isAutoMode; // AUTOモードのトグル
+                        drawUI_Ver2();
+                        lastCheckTime = millis(); // 最後に判定した時間を更新
+                    }
                 }
             }
-        }
+            else // 回転90度と270度はX軸が垂直なので、localXはtp[0].yを基準に、localYはtp[0].xを基準に変換
+            {
+                localX = tp[0].x - BtnshiftRange[currentRotation][0]; // UIキャンバスの左端オフセットと回転によるシフトを考慮してローカル座標に変換
+                localY = tp[0].y - 720;                               // UIキャンバスの上端オフセットを考慮してローカル座標に変換
+
+                // 1. カラーパレット判定 (中心 localY = 200, 半径30)
+                // 許容範囲を少し広めに（上下35ピクセルなど）設定します
+                if (abs(localX) < 35)
+                {
+                    for (int i = 0; i < 6; i++) // 算出した6個の座標
+                    {
+                        int targetY = colorPalette[i].x; // 先ほど計算した 40, 115, 190...（回転によってXとYが入れ替わるため、colorPalette[i].xをtargetYとして扱う）
+                        if (abs(localY - abs(targetY + BtnshiftRange[currentRotation][1])) < 35)
+                        {
+                            baseColor = colorPalette[i].color;
+                            drawUI_Ver2(); // 選択枠を更新するために再描画
+                            break;
+                        }
+                    }
+                }
+
+                // 2. AUTOボタン判定
+                // ボタンの描画位置が (465, 170) なら、同じ localY の範囲で判定可能です
+                if (localY >= AutoshiftRange[currentRotation][0] - 5 && localY <= AutoshiftRange[currentRotation][1] + 5 && abs(localX) < 35)
+                {
+                    if (millis() - lastCheckTime > 300)
+                    {                             // 300ms間隔をあける
+                        isAutoMode = !isAutoMode; // AUTOモードのトグル
+                        drawUI_Ver2();
+                        lastCheckTime = millis(); // 最後に判定した時間を更新
+                    }
+                }
+            }
+
+        } // タッチ座標UIエリア終了
         else
-        { // モデル操作
+        {
+            // STLエリア（上部）のタッチ
             if (isAutoMode)
             {
                 isAutoMode = false;
-                drawUI();
+                drawUI_Ver2();
             }
+
             if (count == 1)
             {
                 if (prev_touch_count == 1)
                 {
-                    // 【回転方向の最終調整】
-                    // dx, dy の両方にマイナスをつけると、操作と回転を反転させます
-                    float dx = (tx - last_x) * 0.008f;
-                    float dy = -(ty - last_y) * 0.008f;
+                    // 向き 0 に合わせたスワイプ方向の調整
+                    // loop関数内のシングルタッチ処理部分
+                    float dx = (tp[0].x - last_x) * 0.008f;
+                    float dy = (tp[0].y - last_y) * 0.008f;
 
-                    float rotX[3][3] = {{1, 0, 0}, {0, cos(dy), -sin(dy)}, {0, sin(dy), cos(dy)}};
+                    // dy にマイナスを付与して上下回転を反転
+                    float rotX[3][3] = {{1, 0, 0}, {0, cos(-dy), -sin(-dy)}, {0, sin(-dy), cos(-dy)}};
                     float rotY[3][3] = {{cos(dx), 0, sin(dx)}, {0, 1, 0}, {-sin(dx), 0, cos(dx)}};
                     float tempRot[3][3];
                     matMultiply(rotX, rotY, tempRot);
                     matMultiply(tempRot, mat, mat);
                 }
-                last_x = tx;
-                last_y = ty;
+                last_x = tp[0].x;
+                last_y = tp[0].y;
             }
             else if (count >= 2)
             {
-                float pdx = tp[0].x - tp[1].x, pdy = tp[0].y - tp[1].y;
-                float dist = sqrt(pdx * pdx + pdy * pdy);
+                float dx = tp[0].x - tp[1].x, dy = tp[0].y - tp[1].y;
+                float dist = sqrt(dx * dx + dy * dy);
                 if (prev_touch_count >= 2)
                 {
                     modelScale += (dist - prev_pinch_dist) * 15.0f;
@@ -251,22 +318,51 @@ void loop()
         if (!isAutoMode && (millis() - lastTouchTime > AUTO_RETURN_MS))
         {
             isAutoMode = true;
-            drawUI();
+            drawUI_Ver2();
         }
     }
     prev_touch_count = count;
+}
+
+void setup()
+{
+    auto cfg = M5.config();
+    M5.begin(cfg);
+    M5.Display.setRotation(0); // 向きを 0 に固定
+    M5.Display.fillScreen(TFT_BLACK);
+
+    SPI.begin(SD_SPI_SCK_PIN, SD_SPI_MISO_PIN, SD_SPI_MOSI_PIN, SD_SPI_CS_PIN);
+    SD.begin(SD_SPI_CS_PIN, SPI, 25000000);
+    loadSTL(currentFilePath.c_str());
+
+    canvasUI.setColorDepth(16);      // UI用のスプライトの色深度を16ビットに設定
+    canvasUI.createSprite(560, 200); // UI用のスプライトを作成
+
+    drawUI_Ver2();
+    canvas.setColorDepth(16);            // STL描画用のスプライトの色深度を16ビットに設定
+    canvas.createSprite(TILE_W, TILE_H); // STL描画用のスプライトを作成
+
+    lastTouchTime = millis();
+}
+
+void loop()
+{
+    M5.update();
+
+    touchLCD();  // タッチと自動回転の両方をこの関数内で処理
+    IMUupdate(); // IMUの更新と自動回転の判定もこの関数内で処理
 
     if (isAutoMode)
     {
-        float adx = 0.008f, ady = 0.005f;
-        float rotX[3][3] = {{1, 0, 0}, {0, cos(ady), -sin(ady)}, {0, sin(ady), cos(ady)}};
-        float rotY[3][3] = {{cos(adx), 0, sin(adx)}, {0, 1, 0}, {-sin(adx), 0, cos(adx)}};
+        float dx = 0.008f, dy = 0.005f;
+        float rotX[3][3] = {{1, 0, 0}, {0, cos(dy), -sin(dy)}, {0, sin(dy), cos(dy)}};
+        float rotY[3][3] = {{cos(dx), 0, sin(dx)}, {0, 1, 0}, {-sin(dx), 0, cos(dx)}};
         float tempRot[3][3];
         matMultiply(rotX, rotY, tempRot);
         matMultiply(tempRot, mat, mat);
     }
 
-    // --- 3Dレンダリング ---
+    // レンダリング処理
     struct DrawTri
     {
         int px[3], py[3], minY, maxY;
@@ -274,14 +370,28 @@ void loop()
         uint16_t color;
     };
     std::vector<DrawTri> drawList;
+    float lx = 0.0f * mat[0][0] + 0.0f * mat[1][0] + 1.0f * mat[2][0];
+    float ly = 0.0f * mat[0][1] + 0.0f * mat[1][1] + 1.0f * mat[2][1];
+    float lz = 0.0f * mat[0][2] + 0.0f * mat[1][2] + 1.0f * mat[2][2];
     drawList.reserve(model.size());
-
     for (const auto &tri : model)
     {
+        // 1. 法線を現在の回転行列で回転させる
         float rnx = tri.normal[0] * mat[0][0] + tri.normal[1] * mat[0][1] + tri.normal[2] * mat[0][2];
         float rny = tri.normal[0] * mat[1][0] + tri.normal[1] * mat[1][1] + tri.normal[2] * mat[1][2];
         float rnz = tri.normal[0] * mat[2][0] + tri.normal[1] * mat[2][1] + tri.normal[2] * mat[2][2];
-        float dot = rnx * lightDir[0] + rny * lightDir[1] + rnz * lightDir[2];
+
+        // 2. 輝度(dot)計算を「カメラ視点の固定ベクトル」で行う
+        // 画面の正面（カメラ）から光が当たっていることにする場合：
+        // 光源を (x:0, y:0, z:1.0) とみなすと、dot = rnz になります。
+        // 少し斜め（カメラの肩越し）から照らしたい場合は、以下のようにします。
+        float lightX = 0.2f;
+        float lightY = 0.2f;
+        float lightZ = 0.95f; // 正面を強めに
+                              // float dot = rnx * lightX + rny * lightY + rnz * lightZ;
+                              // float dot = tri.normal[0] * lx + tri.normal[1] * ly + tri.normal[2] * lz;
+        float dot = fabsf(rnz) * 0.8f + fabsf(rnx) * 0.2f;
+        // 裏向きの面も少しだけ明るく（環境光 0.15f）
         float intensity = std::max(0.15f, dot);
 
         uint8_t r = ((baseColor >> 11) & 0x1F) << 3;
@@ -299,17 +409,14 @@ void loop()
             float rz = vx * mat[2][0] + vy * mat[2][1] + vz * mat[2][2];
             float s = modelScale / (rz + 800.0f);
             dt.px[i] = (int)(rx * s) + 360;
-            dt.py[i] = (int)(ry * s) + 360;
+            dt.py[i] = (int)(ry * s) + 360; // STL領域は 0-719 内
             sumZ += rz;
         }
-
-        long cp = (long)(dt.px[1] - dt.px[0]) * (dt.py[2] - dt.py[0]) - (long)(dt.py[1] - dt.py[0]) * (dt.px[2] - dt.px[0]);
-
-        // 【重要：カリング判定を固定】
-        // 透けている状態を直すため、判定を cp >= 0 に変更しました
-        if (cp >= 0)
-            continue; // 「>=」を「<=」に変えると、描画される面が完全に入れ替わります
-
+        // 向き0 用の表裏判定修正 ( > 0 に変更)
+        // 外積の結果が正のとき（反時計回り）を描画対象から外す、
+        // もしくは負のときを描画対象にする、という切り替えです。
+        if (((long)(dt.px[1] - dt.px[0]) * (dt.py[2] - dt.py[0]) - (long)(dt.py[1] - dt.py[0]) * (dt.px[2] - dt.px[0])) > 0)
+            continue;
         dt.avgZ = sumZ / 3.0f;
         dt.color = faceColor;
         dt.minY = std::min({dt.py[0], dt.py[1], dt.py[2]});
